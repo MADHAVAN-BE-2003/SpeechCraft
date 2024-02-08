@@ -15,7 +15,7 @@ To use SpeechCraft, follow these steps:
 
 1. Clone the repository to your local machine.
 2. Install the necessary dependencies by running `pip install -r requirements.txt`.
-3. Set up the Flask server by navigating to the `backend` directory and running `flask run`.
+3. Set up the Flask server by navigating to the `Python-Backend` directory and running `flask run`.
 4. Use localtunnel to expose the Flask server to the internet for remote access.
 5. Install the Flutter app on your mobile device and configure it to communicate with the Flask server.
 
