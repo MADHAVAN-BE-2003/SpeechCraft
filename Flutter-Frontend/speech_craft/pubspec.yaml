@@ -49,6 +49,7 @@ dependencies:
   flutter_sound_system: ^0.0.9
   random_string: ^2.3.1
   file_picker: ^6.1.1
+  http: ^1.1.0
 
 dev_dependencies:
   flutter_test:

@@ -1,12 +1,18 @@
+import 'dart:typed_data';
+
+import 'package:archive/archive.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:io';
-
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:random_string/random_string.dart';
+import 'package:record/record.dart';
+import 'package:speech_craft/api_constants.dart';
+
+import 'audio_list_page.dart';
 
 class App extends StatefulWidget {
   const App({Key? key}) : super(key: key);
@@ -16,30 +22,120 @@ class App extends StatefulWidget {
 }
 
 class _AppState extends State<App> {
-  final soundRecorderAndPlayer = SoundRecorderAndPlayer();
-  bool isRecording = false, isPlaying = false, isRecordingAvailable = false;
-  late String? filePath;
+  bool isRecording = false,
+      isPlaying = false,
+      isRecordingAvailable = false,
+      _recording = false;
+  String? _filePath = "";
+  late Record recorder;
   late AudioPlayer player;
+  String _localZipFileName = 'images.zip';
 
   @override
   void initState() {
     super.initState();
     player = AudioPlayer();
+    recorder = Record();
+    askMicPermission();
   }
 
-  void _startPlaying(String fileString) {
+  @override
+  void dispose() {
+    super.dispose();
+    recorder.dispose(); // Dispose of the recorder
+    player.dispose(); // Dispose of the player
+  }
+
+  Future<File> _downloadFile(Uri url, String fileName) async {
+    Directory appDocDir = await getApplicationDocumentsDirectory();
+    String appDocPath = appDocDir.path;
+    var file = File('$appDocPath/$fileName');
+    var req = await http.Client().post(url);
+    return file.writeAsBytes(req.bodyBytes);
+  }
+
+  Future<void> _downloadZip(Uri _zipPath) async {
+    var zippedFile = await _downloadFile(_zipPath, _localZipFileName);
+    await unarchiveAndSave(zippedFile);
+  }
+
+  unarchiveAndSave(var zippedFile) async {
+    Directory appDocDir = await getApplicationDocumentsDirectory();
+    String appDocPath = appDocDir.path;
+    List<File> audioFiles = [];
+    Uint8List bytes = zippedFile.readAsBytesSync();
+    var archive = ZipDecoder().decodeBytes(bytes);
+    for (var file in archive) {
+      var fileName = '$appDocPath/${file.name}';
+      if (file.isFile) {
+        var outFile = File(fileName);
+        //print('File:: ' + outFile.path);
+        audioFiles.add(outFile);
+        outFile = await outFile.create(recursive: true);
+        await outFile.writeAsBytes(file.content);
+      }
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AudioListPage(audioFiles: audioFiles),
+      ),
+    );
+  }
+
+  Future<void> askMicPermission() async {
+    var statusMicrophone = await Permission.microphone.status;
+    if (statusMicrophone != PermissionStatus.granted) {
+      await Permission.microphone.request();
+    }
+    askStoragePermission();
+  }
+
+  Future<void> askStoragePermission() async {
+    var statusStorage = await Permission.storage.status;
+    if (statusStorage != PermissionStatus.granted) {
+      await Permission.storage.request();
+    }
+  }
+
+  Future _startRecording() async {
+    if (_filePath == '') {
+      try {
+        print("Nonu: Recording started - " + _recording.toString());
+        await recorder.start();
+      } catch (e) {
+        print("Nonu: Recording Error - " + _recording.toString());
+      }
+    } else {
+      await _stopPlaying();
+      print("Nonu: _filePath empty - " + _recording.toString());
+    }
+  }
+
+  Future _stopRecording() async {
+    try {
+      String? path = await recorder.stop();
+      setState(() {
+        _filePath = path;
+      });
+    } catch (e) {
+      print("Nonu: Stop Recording Error - " + e.toString());
+    }
+  }
+
+  Future<void> _startPlaying(String fileString) async {
     setState(() {
       isPlaying = true;
     });
     Source file = UrlSource(fileString);
-    player.play(file);
+    await player.play(file);
   }
 
-  void _stopPlaying() {
+  Future<void> _stopPlaying() async {
     setState(() {
       isPlaying = false;
     });
-    player.stop();
+    await player.stop();
   }
 
   Future<bool> togglePlaying(String fileString) async {
@@ -49,6 +145,75 @@ class _AppState extends State<App> {
     } else {
       _stopPlaying();
       return false;
+    }
+  }
+
+  Future<String?> upload() async {
+    if (!_recording) {
+      try {
+        FilePickerResult? result = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: ['wav', 'mp4', 'm4a'],
+        );
+
+        if (result != null) {
+          final Directory appDocDir = await getApplicationDocumentsDirectory();
+          final String destFilePath = '${appDocDir.path}/uploaded_audio.wav';
+
+          PlatformFile file = result.files.first;
+          final File sourceFile = await File(file.path!);
+          final File destFile = await sourceFile.copy(destFilePath);
+
+          return destFile.path;
+        } else {
+          // User canceled the picker
+          return null;
+        }
+      } catch (e) {
+        print('Error uploading and playing: $e');
+        return null;
+      }
+    }
+    return null;
+  }
+
+  Future<void> toggleRecording() async {
+    try {
+      if (!_recording) {
+        _filePath = "";
+        _recording = true;
+        if (await Permission.storage.status == PermissionStatus.granted) {
+          await _startRecording();
+        } else {
+          await Permission.storage.request();
+        }
+      } else {
+        _recording = false;
+        await _stopRecording();
+      }
+    } catch (e) {
+      print(e);
+    }
+  }
+
+  Future<void> separateSpeech() async {
+    try {
+      File audioFile = File(_filePath!);
+
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('${APIConstants.baseUrl}/get/separate'),
+      );
+
+      request.files.add(await http.MultipartFile.fromPath(
+        'file',
+        audioFile.path,
+        filename: 'audio.wav',
+      ));
+
+      _downloadZip(request.url);
+    } catch (e) {
+      print('Error: $e');
     }
   }
 
@@ -64,10 +229,10 @@ class _AppState extends State<App> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               TextButton(
-                onPressed: () {
+                onPressed: () async {
                   if (!isRecording && !isPlaying) {
                     print('Nonu: Recording Started.');
-                    soundRecorderAndPlayer.toggleRecording();
+                    await toggleRecording();
                     setState(() {
                       isRecording = true;
                       isRecordingAvailable = false;
@@ -95,7 +260,7 @@ class _AppState extends State<App> {
                 child: TextButton(
                   onPressed: () async {
                     if (isRecording) {
-                      filePath = await soundRecorderAndPlayer.toggleRecording();
+                      await toggleRecording();
                       print('Nonu: Recording Done.');
                       setState(() {
                         isRecording = false;
@@ -125,13 +290,14 @@ class _AppState extends State<App> {
                   if (isRecordingAvailable && !isRecording) {
                     if (isPlaying) {
                       print('Nonu: Playing Recording Stopped.');
-                      togglePlaying(filePath!);
+                      print(_filePath);
+                      togglePlaying(_filePath!);
                       setState(() {
                         isPlaying = false;
                       });
                     } else {
                       print('Nonu: Playing Recording Started.');
-                      togglePlaying(filePath!);
+                      togglePlaying(_filePath!);
                       setState(() {
                         isPlaying = true;
                       });
@@ -156,7 +322,7 @@ class _AppState extends State<App> {
               ),
               TextButton(
                 onPressed: () async {
-                  filePath = await soundRecorderAndPlayer.uploadAndPlay();
+                  _filePath = (await upload())!;
                   setState(() {
                     isRecordingAvailable = true;
                   });
@@ -169,7 +335,26 @@ class _AppState extends State<App> {
                       const EdgeInsets.all(10)),
                 ),
                 child: const Text(
-                  'Upload and Play',
+                  'Upload',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18.0,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: () async {
+                  await separateSpeech();
+                },
+                style: ButtonStyle(
+                  backgroundColor:
+                      MaterialStateProperty.all<Color>(Colors.green),
+                  padding: MaterialStateProperty.all<EdgeInsets>(
+                      const EdgeInsets.all(10)),
+                ),
+                child: const Text(
+                  'Separate Speech',
                   style: TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
@@ -182,164 +367,5 @@ class _AppState extends State<App> {
         ),
       ),
     );
-  }
-}
-
-class SoundRecorderAndPlayer {
-  bool _recording = false, _playing = false;
-  String _filePath = '', _appUid = '';
-
-  void init(String arg) async {
-    _appUid = arg;
-
-    askMicPermission();
-  }
-
-  void dispose() {}
-
-  Future<void> askMicPermission() async {
-    var statusMicrophone = await Permission.microphone.status;
-    if (statusMicrophone != PermissionStatus.granted) {
-      await Permission.microphone.request();
-    }
-    askStoragePermission();
-  }
-
-  Future<void> askStoragePermission() async {
-    var statusStorage = await Permission.storage.status;
-    if (statusStorage != PermissionStatus.granted) {
-      await Permission.storage.request();
-    }
-  }
-
-  bool isRecording() {
-    return _recording;
-  }
-
-  Future<String> getFilePath() async {
-    String fileName =
-        'Recording-Varta-' + _appUid + '-' + randomAlphaNumeric(10) + '.wav';
-    Directory directory;
-    try {
-      if (Platform.isAndroid) {
-        directory = (await getExternalStorageDirectory())!;
-        String newPath = "";
-        List<String> paths = directory.path.split("/");
-        for (int x = 1; x < paths.length; x++) {
-          String folder = paths[x];
-          if (folder != "Android") {
-            newPath += "/" + folder;
-          } else {
-            break;
-          }
-        }
-        newPath = newPath + "/Vaarta/Recordings";
-        directory = Directory(newPath);
-      } else {
-        directory = await getTemporaryDirectory();
-      }
-      File saveFile = File(directory.path + "/$fileName");
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-      }
-      if (await directory.exists()) {
-        return saveFile.path;
-      }
-      return '';
-    } catch (e) {
-      print(e);
-      return '';
-    }
-  }
-
-  Future _startRecording() async {
-    _filePath = await getFilePath();
-    if (_filePath != '') {
-      try {
-        print("Nonu: Recording started - " + _recording.toString());
-        FlutterSoundSystem.startRecording(_filePath);
-      } catch (e) {
-        print("Nonu: Recording Error - " + _recording.toString());
-      }
-    } else {
-      _stopPlaying();
-      print("Nonu: _filePath empty - " + _recording.toString());
-    }
-  }
-
-  Future _stopRecording() async {
-    try {
-      await FlutterSoundSystem.stopRecording();
-    } catch (e) {
-      print("Nonu: Stop Recording Error - " + e.toString());
-    }
-  }
-
-  Future<String> toggleRecording() async {
-    if (!_recording) {
-      _recording = true;
-      _filePath = '';
-      if (await Permission.storage.status == PermissionStatus.granted) {
-        await _startRecording();
-      } else {
-        await Permission.storage.request();
-      }
-      return '';
-    } else {
-      _recording = false;
-      await _stopRecording();
-      return _filePath;
-    }
-  }
-
-  bool isPlaying() {
-    return _playing;
-  }
-
-  void _startPlaying(String fileString) {
-    FlutterSoundSystem.playMedia(fileString);
-  }
-
-  void _stopPlaying() {
-    FlutterSoundSystem.stopMedia();
-  }
-
-  Future<bool> togglePlaying(String fileString) async {
-    if (_playing) {
-      _startPlaying(fileString);
-      return true;
-    } else {
-      _stopPlaying();
-      return false;
-    }
-  }
-
-  Future<String?> uploadAndPlay() async {
-    if (!_recording) {
-      try {
-        FilePickerResult? result = await FilePicker.platform.pickFiles(
-          type: FileType.custom,
-          allowedExtensions: ['wav', 'mp4', 'm4a'],
-        );
-
-        if (result != null) {
-          final Directory appDocDir = await getApplicationDocumentsDirectory();
-          final String destFilePath = '${appDocDir.path}/uploaded_audio.wav';
-
-          PlatformFile file = result.files.first;
-          final File sourceFile = File(file.path!);
-          final File destFile = await sourceFile.copy(destFilePath);
-
-          return destFile.path;
-        } else {
-          // User canceled the picker
-          return null;
-        }
-      } catch (e) {
-        print('Error uploading and playing: $e');
-        return null;
-      }
-    }
-    return null;
   }
 }
