@@ -7,9 +7,11 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:record/record.dart';
+// import 'package:record/record.dart';
+import 'package:record_mp3/record_mp3.dart';
 import 'package:speech_craft/api_constants.dart';
 import 'package:path/path.dart' as path;
+import 'package:speech_craft/bluetooth.dart';
 import 'package:speech_craft/components/neu_box.dart';
 import 'package:speech_craft/enhance_voice.dart';
 
@@ -25,26 +27,23 @@ class App extends StatefulWidget {
 }
 
 class _AppState extends State<App> {
-  bool isRecording = false,
-      isPlaying = false,
-      isRecordingAvailable = false,
-      _recording = false;
+  bool isRecording = false, isPlaying = false, isRecordingAvailable = false;
   String? _filePath = "";
-  late Record recorder;
+  // late AudioRecorder recorder;
   late AudioPlayer player;
 
   @override
   void initState() {
     super.initState();
     player = AudioPlayer();
-    recorder = Record();
+    // recorder = AudioRecorder();
     askMicPermission();
   }
 
   @override
   void dispose() {
     super.dispose();
-    recorder.dispose(); // Dispose of the recorder
+    // recorder.dispose(); // Dispose of the recorder
     player.dispose(); // Dispose of the player
   }
 
@@ -63,26 +62,42 @@ class _AppState extends State<App> {
     }
   }
 
-  Future _startRecording() async {
+  Future<void> _startRecording() async {
     if (_filePath == '') {
       try {
-        print("Nonu: Recording started - " + _recording.toString());
-        await recorder.start();
+        // // Configure recording settings
+        // const recordConfig = RecordConfig(
+        //   sampleRate: 8000, // Desired sample rate (8000 Hz)
+        //   numChannels: 1, // Mono recording
+        // );
+
+        // Prepare the recording path
+        final directory =
+            await getTemporaryDirectory(); // Use system's temporary directory
+        String? filePath =
+            '${directory.path}/recording_${DateTime.now().millisecondsSinceEpoch}.mp3'; // Generate unique path
+
+        // Start recording
+        await RecordMp3.instance.start(filePath, (p0) => null);
+        // await recorder.start(recordConfig, path: filePath);
+        print(filePath);
+        setState(() {
+          _filePath = filePath;
+        });
+        print("Recording started - $_filePath");
       } catch (e) {
-        print("Nonu: Recording Error - " + _recording.toString());
+        print("Recording Error: $e");
       }
     } else {
       await _stopPlaying();
-      print("Nonu: _filePath empty - " + _recording.toString());
+      print("`_filePath` already set, stopping playback and resetting...");
     }
   }
 
-  Future _stopRecording() async {
+  Future<void> _stopRecording() async {
     try {
-      String? path = await recorder.stop();
-      setState(() {
-        _filePath = path;
-      });
+      RecordMp3.instance.stop();
+      // print(recorder.stop());
     } catch (e) {
       print("Nonu: Stop Recording Error - " + e.toString());
     }
@@ -92,8 +107,17 @@ class _AppState extends State<App> {
     setState(() {
       isPlaying = true;
     });
+    print('path' + fileString);
     Source file = UrlSource(fileString);
     await player.play(file);
+    player.onPlayerComplete.first.then((value) {
+      print('path' + fileString);
+      print('Nonu: Playing Recording Completed.');
+      _stopPlaying();
+      setState(() {
+        isPlaying = false;
+      });
+    });
   }
 
   Future<void> _stopPlaying() async {
@@ -103,18 +127,8 @@ class _AppState extends State<App> {
     await player.stop();
   }
 
-  Future<bool> togglePlaying(String fileString) async {
-    if (isPlaying) {
-      _startPlaying(fileString);
-      return true;
-    } else {
-      _stopPlaying();
-      return false;
-    }
-  }
-
   Future<String?> upload() async {
-    if (!_recording) {
+    if (!isRecording) {
       try {
         FilePickerResult? result = await FilePicker.platform.pickFiles(
           type: FileType.custom,
@@ -140,25 +154,6 @@ class _AppState extends State<App> {
       }
     }
     return null;
-  }
-
-  Future<void> toggleRecording() async {
-    try {
-      if (!_recording) {
-        _filePath = "";
-        _recording = true;
-        if (await Permission.storage.status == PermissionStatus.granted) {
-          await _startRecording();
-        } else {
-          await Permission.storage.request();
-        }
-      } else {
-        _recording = false;
-        await _stopRecording();
-      }
-    } catch (e) {
-      print(e);
-    }
   }
 
   Future<void> separateSpeech() async {
@@ -279,7 +274,13 @@ class _AppState extends State<App> {
                               onPressed: () async {
                                 if (!isRecording && !isPlaying) {
                                   print('Nonu: Recording Started.');
-                                  await toggleRecording();
+                                  _filePath = "";
+                                  if (await Permission.storage.status ==
+                                      PermissionStatus.granted) {
+                                    await _startRecording();
+                                  } else {
+                                    await Permission.storage.request();
+                                  }
                                   setState(() {
                                     isRecording = true;
                                     isRecordingAvailable = false;
@@ -296,8 +297,8 @@ class _AppState extends State<App> {
                           child: IconButton(
                               onPressed: () async {
                                 if (isRecording) {
-                                  await toggleRecording();
                                   print('Nonu: Recording Done.');
+                                  await _stopRecording();
                                   setState(() {
                                     isRecording = false;
                                     isRecordingAvailable = true;
@@ -321,50 +322,27 @@ class _AppState extends State<App> {
                     child: Padding(
                       padding: EdgeInsets.symmetric(horizontal: 20.0),
                       child: NeuBox(
-                          child: IconButton(
-                              onPressed: () {
-                                if (isRecordingAvailable && !isRecording) {
-                                  if (isPlaying) {
-                                    print('Nonu: Playing Recording Stopped.');
-                                    print(_filePath);
-                                    togglePlaying(_filePath!);
-                                    setState(() {
-                                      isPlaying = false;
-                                    });
-                                  } else {
-                                    print('Nonu: Playing Recording Started.');
-                                    togglePlaying(_filePath!);
-                                    setState(() {
-                                      isPlaying = true;
-                                    });
-                                  }
-                                }
-                              },
-                              icon: Icon(Icons.play_arrow_rounded))),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(
-              height: 20,
-            ),
-            SizedBox(
-              height: 80,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 20.0),
-                      child: NeuBox(
-                          child: IconButton(
-                              onPressed: () async {
-                                _filePath = (await upload())!;
+                        child: IconButton(
+                          onPressed: () {
+                            if (isRecordingAvailable && !isRecording) {
+                              if (isPlaying) {
+                                print('Nonu: Playing Recording Stopped.');
+                                _stopPlaying();
                                 setState(() {
-                                  isRecordingAvailable = true;
+                                  isPlaying = false;
                                 });
-                              },
-                              icon: Icon(Icons.upload_file_rounded))),
+                              } else {
+                                print('Nonu: Playing Recording Started.');
+                                _startPlaying(_filePath!);
+                                setState(() {
+                                  isPlaying = true;
+                                });
+                              }
+                            }
+                          },
+                          icon: Icon(Icons.play_arrow_rounded),
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -381,23 +359,80 @@ class _AppState extends State<App> {
                     child: Padding(
                       padding: EdgeInsets.symmetric(horizontal: 20.0),
                       child: NeuBox(
-                          child: IconButton(
-                              onPressed: () async {
-                                await separateSpeech();
-                              },
-                              icon: Icon(Icons.join_full_rounded))),
+                        child: IconButton(
+                          onPressed: () async {
+                            _filePath = (await upload())!;
+                            setState(() {
+                              isRecordingAvailable = true;
+                            });
+                          },
+                          icon: Icon(Icons.upload_file_rounded),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 20,
+            ),
+            SizedBox(
+              height: 80,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 20.0),
+                      child: NeuBox(
+                        child: IconButton(
+                          onPressed: () async {
+                            await separateSpeech();
+                          },
+                          icon: Icon(Icons.join_full_rounded),
+                        ),
+                      ),
                     ),
                   ),
                   Expanded(
                     child: Padding(
                       padding: EdgeInsets.symmetric(horizontal: 20.0),
                       child: NeuBox(
-                          child: IconButton(
-                              onPressed: () async {
-                                await enhanceSpeech();
-                              },
-                              icon:
-                                  Icon(Icons.enhance_photo_translate_rounded))),
+                        child: IconButton(
+                          onPressed: () async {
+                            await enhanceSpeech();
+                          },
+                          icon: Icon(Icons.enhance_photo_translate_rounded),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 100,
+            ),
+            SizedBox(
+              height: 80,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 20.0),
+                      child: NeuBox(
+                        child: IconButton(
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => (),
+                              ),
+                            );
+                          },
+                          icon: Icon(Icons.bluetooth_audio),
+                        ),
+                      ),
                     ),
                   ),
                 ],

@@ -1,4 +1,4 @@
 class APIConstants {
   static const String baseUrl =
-      'https://curly-kings-know.loca.lt'; // Change this to your actual API address
+      'https://fast-rats-rest.loca.lt'; // Change this to your actual API address
 }
